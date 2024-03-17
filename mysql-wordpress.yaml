@@ -1,0 +1,164 @@
+---
+- hosts: web
+  tasks:
+    - name: "installing apache"
+      yum:
+        name: httpd
+        state: present
+
+    - name: Creating virtual host
+      template:
+        src: "apache.conf.j2"
+        dest: "/etc/httpd/conf.d/wordpress.conf"
+        owner: "{{ owner }}"
+        group: "{{ group }}"
+      notify: restarting services
+
+    - name: "downloading wordpress files"
+      get_url:
+        url: "{{ wp_url }}"
+        dest: "/tmp/wordpress.tar.gz"
+
+    - name: "extracting files"
+      unarchive:
+        src: "/tmp/wordpress.tar.gz"
+        dest: "/tmp/"
+        remote_src: true
+
+    - name: "copying website files"
+      copy:
+        src: "/tmp/wordpress/"
+        dest: "/var/www/wordpress"
+        owner: "{{ owner }}"
+        group: "{{ group }}"
+        remote_src: yes
+
+    - name: "setting up wp-config"
+      template:
+        src: wp-config.php.tmpl
+        dest: "/var/www/wordpress/wp-config.php"
+        owner: "{{ owner }}"
+        group: "{{ group }}"
+    - name: enable port in firewall
+      firewalld:
+        port: 80/tcp
+        state: enabled
+        permanent: yes
+        immediate: yes
+
+  handlers:
+    - name: "restarting services"
+      service:
+        name: "{{ item }}"
+        state: restarted
+        enabled: true
+      loop:
+        - httpd
+
+- hosts: database
+  tasks:
+    - name: "installing mariadb package"
+      yum:
+        name:
+          - mariadb-server
+          - python3-pip
+        state: present
+
+    - name: installing mysqlclient dependencies
+      yum:
+        name:
+          - https://repo.mysql.com//mysql80-community-release-el9-5.noarch.rpm
+          - python3-devel
+          - mysql-devel
+          - pkgconfig
+          - gcc
+          - xmlsec1
+          - xmlsec1-openssl
+
+    - name: "installing mysqlclient"
+      pip:
+        name: mysqlclient==2.2.4
+
+    - name: "restarting service"
+      service:
+        name: mariadb
+        state: restarted
+        enabled: true
+
+    - name: "updating root password"
+      ignore_errors: true
+      mysql_user:
+        login_user: "root"
+        login_password: ""
+        name: "root"
+        password: "{{ mysql_root_password }}"
+        host_all: true
+
+    - name: "removing anonymous users"
+      mysql_user:
+        login_user: "root"
+        login_password: "{{ mysql_root_password }}"
+        name: ""
+        password: ""
+        host_all: true
+        state: absent
+
+    - name: "creating database"
+      mysql_db:
+        login_user: "root"
+        login_password: "{{ mysql_root_password }}"
+        name: "{{ mysql_db }}"
+        state: present
+
+    - name: "creating user"
+      mysql_user:
+        login_user: "root"
+        login_password: "{{ mysql_root_password }}"
+        name: "{{ mysql_user }}"
+        password: "{{ mysql_password }}"
+        state: present
+        host: "%"
+        priv: "{{ mysql_db }}.*:ALL"
+      notify: restarting services
+
+    - name: enable port in firewall
+      firewalld:
+        port: 3316/tcp
+        state: enabled
+        permanent: yes
+        immediate: yes
+  handlers:
+    - name: "restarting services"
+      service:
+        name: "{{ item }}"
+        state: restarted
+        enabled: true
+      loop:
+        - mariadb
+
+- hosts: load_balancer
+  tasks:
+    - name: install haproxy
+      yum:
+        name: haproxy
+        state: present
+
+    - name: setup haproxy.config
+      template:
+        src: haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+      notify: restart haproxy
+    - name: enable port in firewall
+      firewalld:
+          port: 80/tcp
+          state: enabled
+          permanent: yes
+          immediate: yes 
+
+  handlers:
+    - name: restart haproxy
+      service:
+        name: haproxy
+        state: restarted
+        enabled: yes
+
